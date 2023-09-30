@@ -9,7 +9,7 @@ from torch_geometric.utils import is_undirected
 from torch_sparse import SparseTensor
 
 # from dataloaders.utils import topk_ppr_matrix
-from torch_geometric.loader.base import BaseDataLoader
+# from torch_geometric.loader.base import BaseDataLoader
 import ipdb
 import time
 from torch_sparse import SparseTensor, cat
@@ -139,7 +139,7 @@ import sys
 #         # return subg
 
 
-class clusterdata(torch.utils.data.Dataset):
+class VirtualClusterData(torch.utils.data.Dataset):
     r"""Clusters/partitions a graph data object into multiple subgraphs, as
     motivated by the `"Cluster-GCN: An Efficient Algorithm for Training Deep
     and Large Graph Convolutional Networks"
@@ -209,9 +209,7 @@ class clusterdata(torch.utils.data.Dataset):
             cnt = 0
             t1 = time.time()
             for i in range(num_parts):
-                for j in range(num_parts):
-                    if i == j:
-                        continue
+                for j in range(i+1, num_parts):
                     # ipdb.set_trace()
                     start1, end1 = partptr[i], partptr[i+1]
                     start2, end2 = partptr[j], partptr[j+1]
@@ -220,8 +218,8 @@ class clusterdata(torch.utils.data.Dataset):
                     part2_idx = torch.arange(start2, end2)
                     nnz = adj.index_select(0, part1_idx).index_select(1, part2_idx).nnz()
                     if nnz != 0:
-                        new_row += [i+N]
-                        new_col += [j+N]
+                        new_row += [i+N, j+N]
+                        new_col += [j+N, i+N]
                         cnt += 1
             t2 = time.time()
             print(f'cnt: {cnt}, time: {t2-t1}s, full graph cnt: {num_parts*(num_parts-1)}')
@@ -274,11 +272,11 @@ class clusterdata(torch.utils.data.Dataset):
             new_y = -torch.ones(num_parts)
         new_mask = [False for _ in range(num_parts)]
         if not self.no_mask:
-            for mask in ['train_mask', 'val_mask', 'test_mask']:
+            for mask in ['train_mask', 'valid_mask', 'test_mask']:
                 if self.split_idx: # for ogbn dataset
                     mask_type = mask.split('_mask')[0]
-                    if mask_type == 'val':
-                        mask_type = 'valid'
+                    # if mask_type == 'val':
+                    #     mask_type = 'valid'
                     tmp_mask = torch.tensor([False for _ in range(ori_N)])
                     tmp_mask[self.split_idx[mask_type]] = True
                     data.__setitem__(mask, tmp_mask)
@@ -289,11 +287,11 @@ class clusterdata(torch.utils.data.Dataset):
         #     ori_mask = torch.tensor([True for _ in range(ori_N)])
         #     data[self.new_mask_name] = torch.cat((ori_mask, torch.tensor(new_mask)))
         data.x = torch.cat((data.x, new_x), dim=0)
-        data.y = torch.cat((data.y, new_y), dim=0)
+        data.y = torch.cat((data.y, new_y), dim=0).long()
         # ipdb.set_trace()
         row, col, _ = adj.coo()
         data.edge_index = torch.stack([row, col], dim=0)
-
+        
         return data
 
     def __len__(self):
