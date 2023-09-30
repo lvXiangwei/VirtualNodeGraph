@@ -12,10 +12,11 @@ This repository focuses on virtual nodes used for node classification.
     - 5 runs
 
 - scripts:
+  
     ```python
     nohup python -u train.py > logs/baseline_gcn.log & # baseline gcn
 
-    nohup python -u train.py --use_virtual > logs/virtualdata_gcn.log & # baseline `
+    nohup python -u train.py --use_virtual > logs/virtualdata_gcn.log & # virtualnode gcn
     ```
 
 
@@ -27,10 +28,10 @@ This repository focuses on virtual nodes used for node classification.
 
 ### 2. Virtual node on different sampling method
 
-#### 2.1 neighbor sampling 
+#### 2.1 Neighbor sampling 
 
 -  settings: 
-    - neighbors:[6, 5, 5], (form ibmb)
+    - neighbors:[6, 5, 5](from ibmb)
     - parts: [100]
 
 - scripts:
