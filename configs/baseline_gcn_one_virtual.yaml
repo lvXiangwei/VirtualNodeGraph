@@ -1,0 +1,17 @@
+model: gcn
+num_layers: 3
+hidden_channels: 256
+dropout: 0.5
+
+log_steps: 1
+lr: 0.001
+wd: 0.0
+epochs: 1000
+runs: 5
+
+mode: "max" # no use
+
+use_virtual: True
+cluster_method: "metis" 
+num_parts: 1
+sparse_ratio: 1.0 

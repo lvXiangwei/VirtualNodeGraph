@@ -1,0 +1,16 @@
+model: gcn
+num_layers: 5
+hidden_channels: 128
+dropout: 0.5
+
+log_steps: 1
+lr: 0.01
+dropout: 0.5
+wd: 0.0
+epochs: 500
+runs: 5
+
+JK: True
+mode: "max" # no use
+
+cluster_method: None # no use

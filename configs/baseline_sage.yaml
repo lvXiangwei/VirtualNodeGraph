@@ -1,0 +1,14 @@
+model: sage
+num_layers: 3
+hidden_channels: 256
+dropout: 0.5
+
+log_steps: 1
+lr: 0.01
+wd: 0.0
+epochs: 500
+runs: 5
+
+mode: "max" # no use
+
+cluster_method: "metis" # no use
