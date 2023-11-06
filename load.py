@@ -3,6 +3,7 @@ from torch_geometric.data import Data
 from torch_geometric.datasets import Reddit, Reddit2
 import numpy as np
 import torch
+from torch_geometric.datasets import Planetoid, Flickr, PPI
 
 from torch_geometric.utils import to_undirected, add_remaining_self_loops
 
@@ -31,9 +32,9 @@ def load_data(dataset_name: str,
 
     elif dataset_name.lower().startswith('reddit'):
         if dataset_name == 'reddit2':
-            dataset = Reddit2('./dataset/Reddit2', pre_transform=pretransform)
+            dataset = Reddit2('./dataset/reddit2', pre_transform=pretransform)
         elif dataset_name == 'reddit':
-            dataset = Reddit('./dataset/Reddit', pre_transform=pretransform)
+            dataset = Reddit('./dataset/reddit', pre_transform=pretransform)
         else:
             raise ValueError
         graph = dataset[0]
@@ -41,6 +42,20 @@ def load_data(dataset_name: str,
                      'valid': graph.val_mask.nonzero().reshape(-1),
                      'test': graph.test_mask.nonzero().reshape(-1)}
         # graph.train_mask, graph.val_mask, graph.test_mask = None, None, None
+    elif dataset_name.lower() in ["pubmed"]:
+        dataset = Planetoid('./dataset', dataset_name, transform=pretransform)
+        graph = dataset[0]
+        graph.valid_mask = graph.val_mask
+        split_idx = {'train': graph.train_mask.nonzero().reshape(-1),
+                     'valid': graph.val_mask.nonzero().reshape(-1),
+                     'test': graph.test_mask.nonzero().reshape(-1)}
+    elif dataset_name.lower() in ["flickr"]:
+        dataset = Flickr('./dataset/flickr', transform=pretransform)
+        graph = dataset[0]
+        graph.valid_mask = graph.val_mask
+        split_idx = {'train': graph.train_mask.nonzero().reshape(-1),
+                     'valid': graph.val_mask.nonzero().reshape(-1),
+                     'test': graph.test_mask.nonzero().reshape(-1)}
     else:
         raise NotImplementedError
 

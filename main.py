@@ -12,7 +12,7 @@ from logger import Logger
 from utils import count_parameters, seed_everything, load_config
 from load import load_data, GraphPreprocess
 
-from model3 import VNGNN
+from model import VNGNN
 
 def train(model, data, optimizer):
     model.train()
@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--cluster_method", type=str, default="metis")
     parser.add_argument('--num_parts', type=int, default=128)
     parser.add_argument('--sparse_ratio', type=float, default=1.0)
-
+    parser.add_argument('--use_bn', type=int, default=1)
     # parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--cfg', type=str, default=None) # for reproduction
     args = parser.parse_args()
@@ -120,7 +120,8 @@ def main():
                   JK=args.JK, 
                   use_virtual=args.use_virtual,
                   mode=args.mode, 
-                  sparse_ratio=args.sparse_ratio).to(device)
+                  sparse_ratio=args.sparse_ratio,
+                  use_bn = args.use_bn).to(device)
     #########################################################
     print("Parameters:")
     count_parameters(model)

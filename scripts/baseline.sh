@@ -19,3 +19,14 @@ nohup python -u main.py --cfg configs/virtual_jknet.yaml > logs/jknet/virtual_jk
 nohup python -u main.py --cfg configs/baseline_gcn_one_virtual.yaml > logs/baseline/gcn/gcn_one_virtual.log &
 nohup python -u main.py --cfg configs/baseline_sage_one_virtual.yaml > logs/baseline/sage/sage_one_virtual.log &
 nohup python -u main.py --cfg configs/baseline_jknet_one_virtual.yaml > logs/baseline/jknet/baseline_jknet_one_virtual.log &
+
+
+### flikcr
+nohup python -u main.py --cfg configs/flickr/baseline_gcn.yaml > logs/baseline/flickr/gcn.log &
+nohup python -u main.py --cfg configs/flickr/baseline_gcn_one_virtual.yaml > logs/baseline/flickr/gcn_one_virtual.log &
+nohup python -u main.py --cfg configs/flickr/gcn_virtual.yaml > logs/baseline/flickr/gcn_virtual.log &
+
+### pubmed
+nohup python -u main.py --cfg configs/pubmed/baseline_gcn.yaml > logs/baseline/pubmed/gcn.log &
+nohup python -u main.py --cfg configs/pubmed/baseline_gcn_one_virtual.yaml > logs/baseline/pubmed/gcn_one_virtual.log &
+nohup python -u main.py --cfg configs/pubmed/virtual_gcn.yaml > logs/baseline/pubmed/gcn_virtual.log &

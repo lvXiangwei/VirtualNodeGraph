@@ -5,11 +5,11 @@ from torch.nn import Sequential, Linear, ReLU, Conv2d, BatchNorm1d, LeakyReLU, S
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data import ClusterData, Data
+from torch_geometric.data import Data
 from torch_geometric.utils import from_scipy_sparse_matrix
 from scipy.sparse import coo_matrix
 from torch_geometric.utils import to_undirected
-
+from torch_geometric.loader import ClusterData
 import os
 import time
 from torch_sparse import SparseTensor, cat
@@ -66,10 +66,14 @@ def get_vn_index(name, num_ns, num_vns, num_vns_conn, edge_index, save_dir):
         if not os.path.exists(save_dir):
             print("Clutsering...")
             start = time.time()
-            clu = ClusterData(Data(edge_index=edge_index), num_parts=num_vns)
-            idx = torch.zeros(num_vns, num_ns)
-            for i in range(num_vns):
-                idx[i][clu.perm[clu.partptr[i]:clu.partptr[i+1]]] = 1
+            if num_vns == 1:
+                idx = torch.ones(1, num_ns)
+            else:
+                clu = ClusterData(Data(edge_index=edge_index), num_parts=num_vns)
+                # import ipdb; ipdb.set_trace()
+                idx = torch.zeros(num_vns, num_ns)
+                for i in range(num_vns):
+                    idx[i][clu.partition.node_perm[clu.partition.partptr[i]:clu.partition.partptr[i+1]]] = 1
             end = time.time()
             print(f"Cluster done, cost {end - start}")
             torch.save(idx, save_dir)
@@ -101,12 +105,12 @@ class VirtualNode(nn.Module):
         # MLP to transform virtual node at every layer
         self.trans = nn.Linear(in_feats, hidden_feats)
         self.mlp_vns =  nn.Sequential(
-            nn.Linear(hidden_feats, 2 * hidden_feats),
-            nn.LayerNorm(2 * hidden_feats),
-            nn.ReLU(),
-            nn.Linear(2 * hidden_feats, hidden_feats),
+            nn.Linear(hidden_feats, hidden_feats),
             nn.LayerNorm(hidden_feats),
-            nn.ReLU()
+            nn.ReLU(),
+            # nn.Linear(2 * hidden_feats, hidden_feats),
+            # nn.LayerNorm(hidden_feats),
+            # nn.ReLU()
             # nn.Linear(hidden_feats, hidden_feats),
             # nn.LayerNorm(hidden_feats),
             # nn.ReLU()
@@ -255,7 +259,8 @@ class VNGNN(torch.nn.Module):
                  num_clusters=0, 
                  JK=False,  
                  mode="cat",
-                 sparse_ratio=1.0):
+                 sparse_ratio=1.0,
+                 use_bn=1):
         
         super().__init__()
         
@@ -270,7 +275,7 @@ class VNGNN(torch.nn.Module):
         self.use_virtual = use_virtual
         self.convs = torch.nn.ModuleList()
         self.bns = torch.nn.ModuleList()
-    
+        self.use_bn = use_bn
 
         if self.use_virtual:
             self.vn_index, self.cluster_adj = self.build_virtual_edges(sparse_ratio=sparse_ratio)
@@ -406,7 +411,8 @@ class VNGNN(torch.nn.Module):
             h = self.convs[layer](h, adj_t)  # GCN layer
             
             if layer != self.num_layers - 1 or self.JK:   
-                h = self.bns[layer](h)             
+                if self.use_bn:
+                    h = self.bns[layer](h)             
                 h = F.relu(h)
                 h = F.dropout(h, p=self.dropout, training=self.training)
             
