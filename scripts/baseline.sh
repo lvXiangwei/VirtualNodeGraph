@@ -30,3 +30,14 @@ nohup python -u main.py --cfg configs/flickr/gcn_virtual.yaml > logs/baseline/fl
 nohup python -u main.py --cfg configs/pubmed/baseline_gcn.yaml > logs/baseline/pubmed/gcn.log &
 nohup python -u main.py --cfg configs/pubmed/baseline_gcn_one_virtual.yaml > logs/baseline/pubmed/gcn_one_virtual.log &
 nohup python -u main.py --cfg configs/pubmed/virtual_gcn.yaml > logs/baseline/pubmed/gcn_virtual.log &
+
+
+### model design
+#### model4
+# attn dropout: 0.6
+nohup python -u main.py --cfg configs/test/test_model4.yaml --device 3 > logs/model_design/test_model4_attn_dp_0.6 &
+nohup python -u main.py --cfg configs/test/test_model4.yaml --device 3 > logs/model_design/test_model4_attn_dp_0.6_merge_dp_0.6 &
+
+# model5
+# cross-cluster
+nohup python -u main.py --cfg configs/test/test_model5.yaml --device 1 > logs/model_design/test_model5_attn_dp_0.6_merge_dp_0.6_cross_cluster.log &

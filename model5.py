@@ -240,7 +240,8 @@ class VNGNN(torch.nn.Module):
                 self.gn_trans.append(GNTransmitterUnit(channels[i], channels[i+1], 0.6))
                 self.gn_merge.append(WarpGateUnit(channels[i+1], 0.6))
             for i in range(num_layers - 1):
-                self.vn_update.append(nn.Linear(channels[i], channels[i+1]))
+                # self.vn_update.append(nn.Linear(channels[i], channels[i+1]))
+                self.vn_update.append(get_conv_layer(model, channels[i], channels[i+1]))
                 self.vn_trans.append(VNTransmitterUnit(channels[i], channels[i+1])) 
                 self.vn_merge.append(WarpGateUnit(channels[i+1], 0.6))
             
@@ -368,7 +369,7 @@ class VNGNN(torch.nn.Module):
             if self.use_virtual:
                 if layer != self.num_layers - 1:
                     # VNUpdate, vraph node update,
-                    g_hat = self.vn_update[layer](vx) # (5), (C, H)
+                    g_hat = self.vn_update[layer](vx, self.cluster_adj.to(vx.device)) # (5), (C, H)
 
                     # VNTrans, graph -> virtual node
                     h_trans = self.vn_trans[layer](embs[layer], vx, self.vn_index) # (6), (C, H)

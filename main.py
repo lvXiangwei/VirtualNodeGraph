@@ -11,8 +11,27 @@ from ogb.nodeproppred import PygNodePropPredDataset, Evaluator
 from logger import Logger
 from utils import count_parameters, seed_everything, load_config
 from load import load_data, GraphPreprocess
+from torch_geometric.loader import NeighborLoader
 
-from model import VNGNN
+from model7 import VNGNN
+
+def bacth_train(model, train_loader, optimizer):
+    model.train()
+    total_loss = total_nodes = 0
+    for batch in train_loader:
+        batch = batch.to(device)
+        optimizer.zero_grad()
+        batch.x = batch.x.to(device)
+        batch.edge_index = batch.edge_index.to(device)
+        out = model(batch)[batch.train_mask]
+        loss = F.nll_loss(out, batch.y[batch.train_mask].to(device))
+        loss.backward()
+        optimizer.step()
+
+        nodes = batch.train_mask.sum().item()
+        total_loss += loss.item() * nodes
+        total_nodes += nodes
+    return total_loss / total_nodes
 
 def train(model, data, optimizer):
     model.train()
@@ -31,7 +50,7 @@ def test(model, data, evaluator):
     # out = model(data.x.to(device), data.edge_index.to(device))
     data.x = data.x.to(device)
     data.edge_index = data.edge_index.to(device)
-    out = model(data)
+    out = model(data, batch_train=False)
     y_pred = out.argmax(dim=-1, keepdims=True)
     
     # loss
@@ -83,6 +102,8 @@ def main():
     parser.add_argument('--use_bn', type=int, default=1)
     # parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--cfg', type=str, default=None) # for reproduction
+
+    parser.add_argument('--sample', type=str, default=None) # 
     args = parser.parse_args()
     
     if args.cfg:
@@ -104,6 +125,25 @@ def main():
     # 1. load data
     graph, _ = load_data(args.dataset, small_trainingset=1.0, pretransform=GraphPreprocess(True, True))
     # import ipdb; ipdb.set_trace()
+    if args.sample in ["neighbor"]:
+        train_loader = NeighborLoader(
+            graph, 
+            input_nodes=graph.train_mask,
+            num_neighbors=[6, 5, 5],
+            batch_size = 1024,
+            shuffle=True,
+            num_workers=1,
+            persistent_workers=True,
+        )
+
+        # test_loader = NeighborLoader(
+        #     graph, 
+        #     input_nodes=None,
+        #     num_neighbors=[-1],
+        #     batch_size = 4096,
+        #     num_workers=1,
+        #     persistent_workers=True,
+        # )
     # 2. model 
     #########################################################
     model = VNGNN(graph.num_features, 
@@ -140,7 +180,11 @@ def main():
             wandb.config.update(args)
             
         for epoch in range(1, 1 + args.epochs):
-            train(model, graph, optimizer)
+            # import ipdb; ipdb.set_trace()
+            if args.sample == "neighbor":
+                bacth_train(model, train_loader, optimizer)
+            else:
+                train(model, graph, optimizer)
             if epoch % args.log_steps == 0:
                 accs, losses = test(model, graph, evaluator)
                 logger.add_result(run, accs)

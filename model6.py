@@ -117,12 +117,12 @@ class AdditiveAttention(nn.Module):
         return context, attn
 
     
-class VNTransmitterUnit(nn.Module):
+class GNTransmitterUnit(nn.Module):
     """
-    It calculates message from graph node to virtual node.
+    It calculates message from normal node to super node.
     """
     def __init__(self, in_dim, out_dim, dropout_ratio=-1, activation=F.tanh):
-        super(VNTransmitterUnit, self).__init__()
+        super(GNTransmitterUnit, self).__init__()
         self.attn = AdditiveAttention(in_dim)
         self.dropout_ratio = dropout_ratio
         self.activation = activation
@@ -140,7 +140,8 @@ class VNTransmitterUnit(nn.Module):
             clutser_h = h[vn_index[v]]
             _, attn= self.attn(g[v], clutser_h, clutser_h)
             if self.dropout_ratio > 0.0:
-                attn = F.dropout(attn, self.dropout_ratio, self.training)
+                attn = F.dropout(attn, self.dropout_ratio)
+            # import ipdb; ipdb.set_trace()
             g_v = torch.mm(attn.unsqueeze(0), clutser_h)
             g_list.append(g_v)
         h_trans = torch.cat(g_list, dim=0)
@@ -149,12 +150,12 @@ class VNTransmitterUnit(nn.Module):
         return h_trans
 
 
-class GNTransmitterUnit(nn.Module):
+class VNTransmitterUnit(nn.Module):
     """
-    It calculates message from virtual node to graph node.
+    It calculates message from super node to normal node.
     """
     def __init__(self, hidden_dim_super=16, hidden_dim=16, dropout_ratio=-1):
-        super(GNTransmitterUnit, self).__init__()
+        super(VNTransmitterUnit, self).__init__()
         self.F_super = nn.Linear(hidden_dim_super, hidden_dim)
         
     def forward(self, g):
@@ -183,11 +184,11 @@ class WarpGateUnit(nn.Module):
         # vn_index: (N, 2)
         
         if vn_index is not None:
+            # import ipdb; ipdb.set_trace()
             g = torch.index_select(g, 0, vn_index[:, 1])
         z = self.H(h) + self.G(g)
         if self.dropout_ratio > 0.0:
-            z = F.dropout(z, self.dropout_ratio, self.training)
-        
+            z = F.dropout(z, self.dropout_ratio)
         z = self.activation(z)
         merged = (1 - z) * h + z * g
         return merged
@@ -228,24 +229,27 @@ class VNGNN(torch.nn.Module):
 
         if self.use_virtual:
             self.vn_index, self.cluster_adj = self.build_virtual_edges(sparse_ratio=sparse_ratio)
-            self.virtual_nodes = nn.Embedding(num_clusters, in_channels)
-            channels = [in_channels] + [hidden_channels] * (num_layers - 1) + [out_channels] # (layer + 1, )
-            self.vn_trans = nn.ModuleList() # layer
-            self.vn_update = nn.ModuleList() # layer - 1
-            self.vn_merge = nn.ModuleList()
-
-            self.gn_merge = nn.ModuleList()
-            self.gn_trans = nn.ModuleList()
-            for i in range(num_layers):
-                self.gn_trans.append(GNTransmitterUnit(channels[i], channels[i+1], 0.6))
-                self.gn_merge.append(WarpGateUnit(channels[i+1], 0.6))
-            for i in range(num_layers - 1):
-                self.vn_update.append(nn.Linear(channels[i], channels[i+1]))
-                self.vn_trans.append(VNTransmitterUnit(channels[i], channels[i+1])) 
-                self.vn_merge.append(WarpGateUnit(channels[i+1], 0.6))
+            self.virtual_nodes = nn.Embedding(num_clusters, hidden_channels)
+            # channels = [in_channels] + [hidden_channels] * (num_layers - 1) + [out_channels] # (layer + 1, )
+            channels = [hidden_channels] * (num_layers - 1)
+            self.vntrans = nn.ModuleList() # layer
+            self.update_gn = nn.ModuleList() # layer - 1
+            self.merge_gn = nn.ModuleList()
+            self.merge_vn = nn.ModuleList()
+            self.gntrans = nn.ModuleList()
+            # import ipdb; ipdb.set_trace()
+            for i in range(num_layers -2):
+                self.vntrans.append(VNTransmitterUnit(channels[i], channels[i+1])) 
+                self.merge_gn.append(WarpGateUnit(channels[i+1], 0.5))
+            for i in range(num_layers - 2):
+                self.update_gn.append(get_conv_layer(model, channels[i], channels[i+1]))
+                # self.update_gn.append(nn.Linear(channels[i], channels[i+1]))
+                self.gntrans.append(GNTransmitterUnit(channels[i], channels[i+1], 0.5))
+                self.merge_vn.append(WarpGateUnit(channels[i+1], 0.5))
             
-
+            # import ipdb; ipdb.set_trace()
         if model == "gat":
+            # import ipdb; ipdb.set_trace()
             for i in range(num_layers):
                 in_hidden = hidden_channels if i > 0 else in_channels
                 out_hidden = hidden_channels // 3 if i < num_layers - 1 else out_channels
@@ -355,32 +359,37 @@ class VNGNN(torch.nn.Module):
         adj_t:          [# of nodes, # of nodes]
         virtual_node:   [# of virtual nodes, # of features]
         """
+        # import ipdb; ipdb.set_trace()
         x = data.x
         adj_t = data.edge_index
-        if self.use_virtual: 
-            vn_indices = torch.nonzero(self.vn_index.T).to(x.device)  # (N, 2), vn_indices[i]=(i, j), graph node i -> vitual node j
-            vx = self.virtual_nodes.weight # (C, I)
-        embs = [x] # (N, I)
+        if self.use_virtual:
+            vn_indices = torch.nonzero(self.vn_index.T).to(x.device)
+            vx = self.virtual_nodes.weight
+        # import ipdb; ipdb.set_trace()
+        embs = [x] 
         # virtual_emb = [self.virtual_node.weight]
+        h = x
         for layer in range(self.num_layers):
-            # GNUpdate, graph node update, （1）
-            hv_hat = self.convs[layer](embs[layer], adj_t)  # (N, H)/(N, O)
+            # graph node update
+            h = self.convs[layer](h, adj_t)  # GCN layer #(N, D)
             if self.use_virtual:
-                if layer != self.num_layers - 1:
-                    # VNUpdate, vraph node update,
-                    g_hat = self.vn_update[layer](vx) # (5), (C, H)
-
-                    # VNTrans, graph -> virtual node
-                    h_trans = self.vn_trans[layer](embs[layer], vx, self.vn_index) # (6), (C, H)
                 
-                # GNTrans, virtual node -> graph node
-                g_trans = self.gn_trans[layer](vx)  # (2), (C, H)
-                # GNMerge
-                h = self.gn_merge[layer](hv_hat, g_trans, vn_indices) # (3), (N, H)
+                # if layer != self.num_layers - 1:
+                if layer > 0 and layer != self.num_layers - 1:
+                    # virtual node update
+                    g_new = self.update_gn[0](vx, self.cluster_adj.to(vx.device)) # I(H) -> H
 
-                if layer != self.num_layers - 1:
-                    # VNMerge
-                    vx = self.vn_merge[layer](h_trans, g_hat) # (C, H)
+                    # graph -> virtual node
+                    h_trans = self.gntrans[0](embs[layer], vx, self.vn_index)  # 
+                
+                if layer > 0 and layer != self.num_layers - 1:
+                    # virtual -> graph node
+                    g_trans = self.vntrans[0](vx)
+                    h = self.merge_gn[0](h, g_trans, vn_indices) 
+
+                if layer > 0 and layer != self.num_layers - 1:
+                    # import ipdb; ipdb.set_trace()
+                    vx = self.merge_vn[0](h_trans, g_new)
                 
             if layer != self.num_layers - 1 or self.JK:   
                 h = self.bns[layer](h)             
@@ -389,6 +398,7 @@ class VNGNN(torch.nn.Module):
             
             embs.append(h)
                 
+        
         if self.JK:
             emb = self.jump(embs[1:])
             emb = self.lin(emb)
