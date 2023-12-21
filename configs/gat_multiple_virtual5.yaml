@@ -1,0 +1,17 @@
+model: gat
+num_layers: 3
+hidden_channels: 255
+dropout: 0.3
+
+log_steps: 1
+lr: 0.002
+wd: 0.0
+epochs: 1000
+runs: 5
+
+mode: "max" # no use
+
+use_virtual: True
+cluster_method: "metis" 
+num_parts: 64
+sparse_ratio: 0.5 

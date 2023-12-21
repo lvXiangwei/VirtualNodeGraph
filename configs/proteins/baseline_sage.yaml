@@ -1,0 +1,17 @@
+dataset: proteins
+model: sage
+num_layers: 3
+hidden_channels: 256
+dropout: 0.0
+
+log_steps: 5
+lr: 0.01
+wd: 0.0
+epochs: 1000
+runs: 5
+
+use_bn: 0
+
+mode: "max" # no use
+
+cluster_method: "metis" # no use

@@ -13,6 +13,8 @@ from torch_geometric.utils import to_undirected
 import os
 import time
 from torch_sparse import SparseTensor, cat
+from utils import build_virtual_edges
+
 def get_conv_layer(name, in_channels, out_channels):
     if name.startswith("gcn"):
         return GCNConv(in_channels, out_channels, cached=True)
@@ -52,256 +54,125 @@ def get_graph_pooling(name):
         raise ValueError(f"graph pooling - {name} is unsupported at this time!")
     return pool
 
-def get_vn_index(name, num_ns, num_vns, num_vns_conn, edge_index, save_dir):
-    if name == "full":
-        idx = torch.ones(num_vns, num_ns)
-    elif name == "random":
-        idx = torch.zeros(num_vns, num_ns)
-        for i in range(num_ns):
-            rand_indices = torch.randperm(num_vns)[:num_vns_conn]
-            idx[rand_indices, i] = 1
-    elif name == "random-f" or name == "diffpool" or name == "random-e":
-        return None
-    elif "metis" in name:
-        if not os.path.exists(save_dir):
-            print("Clutsering...")
-            start = time.time()
-            clu = ClusterData(Data(edge_index=edge_index), num_parts=num_vns)
-            idx = torch.zeros(num_vns, num_ns)
-            for i in range(num_vns):
-                idx[i][clu.perm[clu.partptr[i]:clu.partptr[i+1]]] = 1
-            end = time.time()
-            print(f"Cluster done, cost {end - start}")
-            torch.save(idx, save_dir)
-        else:
-            idx = torch.load(save_dir)
-            
-    else:
-        raise ValueError(f"{name} is unsupported at this time!")
-    return idx == 1
 
+class AdditiveAttention(nn.Module):
+    """
+     Applies a additive attention (bahdanau) mechanism on the output features from the decoder.
+     Additive attention proposed in "Neural Machine Translation by Jointly Learning to Align and Translate" paper.
 
-class Attention(nn.Module):
-    def __init__(self, in_features, out_features, dropout=0.6, alpha=0.2):
-        super().__init__()
-        self.dropout = dropout
-        self.alpha = alpha
-        self.W = nn.Parameter(torch.zeros(size=(in_features, out_features)))
-        nn.init.xavier_uniform_(self.W.data, gain=1.414)
-        self.a = nn.Parameter(torch.zeros(size=(2*out_features, 1)))
-        nn.init.xavier_uniform_(self.a.data, gain=1.414)
-        self.leakyrelu = nn.LeakyReLU(self.alpha)
+     Args:
+         hidden_dim (int): dimesion of hidden state vector
 
+     Inputs: query, value
+         - **query** (batch_size, q_len, hidden_dim): tensor containing the output features from the decoder.
+         - **value** (batch_size, v_len, hidden_dim): tensor containing features of the encoded input sequence.
 
-    def forward(self, graph_node, virtual_node):
-        '''
-        graph node: (N, D)
-        virtual node: (C, D)
-        '''
-        N = graph_node.shape[0]
-        C = virtual_node.shape[0]
-        D = graph_node.shape[1]
-        graph_node = torch.mm(graph_node, self.W)
-        virtual_node = torch.mm(virtual_node, self.W)
-        import ipdb; ipdb.set_trace()
-        # a_input = torch.cat([graph_node.repeat(1, C).view(C * N, -1), virtual_node.repeat(N, 1)], dim=1).view(N, -1, 2*graph_node.shape[1]) # (N, C, 2*D)
-        a_input = torch.cat([graph_node.unsqueeze(1).expand(-1, C, -1), virtual_node.unsqueeze(0).expand(N, -1, -1)], dim=2).view(N, -1, 2 * D)
+     Returns: context, attn
+         - **context**: tensor containing the context vector from attention mechanism.
+         - **attn**: tensor containing the alignment from the encoder outputs.
 
-        attention = self.leakyrelu(torch.matmul(a_input, self.a).squeeze(2)).view(N, C)
-        attention = F.softmax(attention, dim=1)
-        attention = F.dropout(attention, self.dropout, training=self.training)
-        h_prime = torch.matmul(attention, virtual_node) # (N, D)
-        return h_prime
+     Reference:
+         - **Neural Machine Translation by Jointly Learning to Align and Translate**: https://arxiv.org/abs/1409.0473
+    """
+    def __init__(self, hidden_dim: int) -> None:
+        super(AdditiveAttention, self).__init__()
+        self.query_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.key_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.bias = nn.Parameter(torch.rand(hidden_dim).uniform_(-0.1, 0.1))
+        self.score_proj = nn.Linear(hidden_dim, 1)
 
-class Attention2(nn.Module):
-    def __init__(self, in_features, out_features, dropout=0.6, alpha=0.2):
-        '''
-        similar to https://github.com/Diego999/pyGAT/blob/master/layers.py#L7
-        '''
-        super().__init__()
-        self.dropout = dropout
-        self.alpha = alpha
+    def forward(self, query, key, value):
+        # query: (1, D)
+        # key, values: (N, D)
+        score = self.score_proj(torch.tanh(self.key_proj(key) + self.query_proj(query) + self.bias)).squeeze(-1)
+        attn = F.softmax(score, dim=-1)
+        # import ipdb; ipdb.set_trace()
+        context = torch.mm(attn.unsqueeze(0), value)
+        return context, attn
 
-        self.W = nn.Parameter(torch.empty(size=(in_features, out_features)))
-        nn.init.xavier_uniform_(self.W.data, gain=1.414)
-        self.a = nn.Parameter(torch.empty(size=(2*out_features, 1))) # (2D, 1)
-        nn.init.xavier_uniform_(self.a.data, gain=1.414)
-        self.leakyrelu = nn.LeakyReLU(self.alpha)
-
-    def forward(self, graph_node, virtual_node):
-        '''
-        graph node: (N, I)
-        virtual node: (C, I)
-        '''
-        N = graph_node.shape[0]
-        C = virtual_node.shape[0]
-        D = graph_node.shape[1]
-        wh_n = torch.mm(graph_node, self.W) # (N, D)
-        wh_v = torch.mm(virtual_node, self.W) # (C, D)
-        wh1 = torch.matmul(wh_n, self.a[:D, :]) #(N, 1)
-        wh2 = torch.matmul(wh_v, self.a[D:, :]) # (C, 1)
-        e = wh1 + wh2.T # (N, C)
-        attention = self.leakyrelu(e)
-        attention = F.softmax(attention, dim=1)
-        attention = F.dropout(attention, self.dropout, training=self.training)
-        h_prime = torch.matmul(attention, virtual_node) # (N, D)
-        return h_prime
-
-class VirtualNode(nn.Module):
-    def __init__(self, in_feats, hidden_feats, layers, vn_index, model = "gcn", num=1, edge_index=None, dropout=0.5, residual=False):
-        super(VirtualNode, self).__init__()
-        self.dropout = dropout
-        # Add residual connection or not
-        self.residual = residual
-        self.vn_index = vn_index
-        self.num_layer = layers
-        # Set the initial virtual node embedding to 0.
-        self.vn_emb = nn.Embedding(num, in_feats)
-        # nn.init.constant_(self.virtualnode_embedding.weight.data, 0)
-
-        # if in_feats == out_feats:
-        #     self.linear = nn.Identity()
-        # else:
-        #     self.linear = nn.Linear(in_feats, out_feats)
-
-        # MLP to transform virtual node at every layer
-        self.mlp_vns = nn.ModuleList()
-        self.mlp_vns.append(nn.Sequential(
-            # nn.Linear(in_feats, 2 * hidden_feats),
-            # nn.BatchNorm1d(2 * hidden_feats),
-            # nn.ReLU(),
-            # nn.Linear(2 * hidden_feats, hidden_feats),
-            # nn.BatchNorm1d(hidden_feats),
-            # nn.ReLU())
-            nn.Linear(in_feats, hidden_feats),
-            nn.LayerNorm(hidden_feats),
-            nn.ReLU()
-            )
-        )
-
-        # message passing between virtual node
-        self.convs = nn.ModuleList()
-        self.bns = nn.ModuleList()
-        self.convs.append(get_conv_layer(model, in_feats, in_feats))
-        # self.bns.append(nn.BatchNorm1d(in_feats))
     
+class VNTransmitterUnit(nn.Module):
+    """
+    It calculates message from graph node to virtual node.
+    """
+    def __init__(self, in_dim, out_dim, dropout_ratio=-1, activation=F.tanh):
+        super(VNTransmitterUnit, self).__init__()
+        self.attn = AdditiveAttention(in_dim)
+        self.dropout_ratio = dropout_ratio
+        if activation == "tanh":
+            self.activation = F.tanh
+        elif activation == "sigmoid":
+            self.activation = F.sigmoid
+        elif activation == "ReLU":
+            self.activation = F.relu
+        elif activation == "None":
+            self.activation = lambda x: x
+        self.W = nn.Linear(in_dim, out_dim)
 
-        for _ in range(layers - 2):
-            self.mlp_vns.append(nn.Sequential(
-                    # nn.Linear(hidden_feats, 2 * hidden_feats),
-                    # nn.BatchNorm1d(2 * hidden_feats),
-                    # nn.ReLU(),
-                    # nn.Linear(2 * hidden_feats, hidden_feats),
-                    # nn.BatchNorm1d(hidden_feats),
-                    # nn.ReLU())
-                    nn.Linear(hidden_feats, hidden_feats),
-                    nn.LayerNorm(hidden_feats),
-                    nn.ReLU()
-                )
-            )
-            self.convs.append(get_conv_layer(model, hidden_feats, hidden_feats))
-            # self.bns.append(nn.BatchNorm1d(hidden_feats)),
-        self.convs.append(get_conv_layer(model, hidden_feats, hidden_feats))
+    def forward(self, h, g, vn_index):
+        '''
+        h: (N, D)
+        g: (C, D)
+        vn_index: (C, N)
+        '''
+        # import ipdb; ipdb.set_trace()
+        cluster_num = g.shape[0]
+        g_list = []
+        for v in range(cluster_num):
+            cluster_h = h[vn_index[v]]
+            _, attn= self.attn(g[v], cluster_h, cluster_h)
+            if self.dropout_ratio > 0.0:
+                attn = F.dropout(attn, self.dropout_ratio, self.training)
+            g_v = torch.mm(attn.unsqueeze(0), cluster_h)
+            g_list.append(g_v)
+        h_trans = torch.cat(g_list, dim=0)
+        h_trans = self.W(h_trans)
+        h_trans = self.activation(h_trans)
+        return h_trans
+
+class GNTransmitterUnit(nn.Module):
+    """
+    It calculates message from virtual node to graph node.
+    """
+    def __init__(self, hidden_dim_super=16, hidden_dim=16):
+        super(GNTransmitterUnit, self).__init__()
+        self.F_super = nn.Linear(hidden_dim_super, hidden_dim)
         
-        self.virtual_num = num
-        self.virtual_edge_index = edge_index
-
-
-        ######### attention
-        self.att_list = nn.ModuleList([
-            Attention2(in_feats, in_feats),
-            Attention2(hidden_feats, hidden_feats),
-            Attention2(hidden_feats, hidden_feats)]
-        )
-  
+    def forward(self, g):
+        """
+        g: (C, I)
+        """
+        g_trans = self.F_super(g) # (C, D)
+        g_trans = F.tanh(g_trans)
+        return g_trans
     
-        # self.att = Attention(hidden_feats, hidden_feats)
-        self.reset_parameters()
 
-    def reset_parameters(self):
-        # if not isinstance(self.linear, nn.Identity):
-        #     self.linear.reset_parameters()
-        for c in self.convs:
-            c.reset_parameters()
-        for c in self.bns:
-            c.reset_parameters()
-        for c in self.mlp_vns.children():
-           if hasattr(c, 'reset_parameters'):
-                c.reset_parameters()
-        nn.init.constant_(self.vn_emb.weight.data, 0)
+class WarpGateUnit(nn.Module):
+    """
+    It computes gated-sum mixing `merged` feature from normal node feature `h`
+    and super node feature `g`,
+    """
+    def __init__(self, hidden_dim=16, dropout_ratio=-1, activation=F.sigmoid):
+        super(WarpGateUnit, self).__init__()
+        self.H = nn.Linear(hidden_dim, hidden_dim)
+        self.G = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout_ratio = dropout_ratio
+        self.activation = activation
 
-    def update_node_emb(self, layer, x, vn_indices, vx=None):
-        r""" Add message from virtual nodes to graph nodes.
-        Args:
-            x (torch.Tensor): The input node feature.
-            vn_indices: (# of clutser, # of node)
-            vx (torch.Tensor, optional): Optional virtual node embedding.
-
-        Returns:
-            (torch.Tensor): The output node feature.
-            (torch.Tensor): The output virtual node embedding.
-        """
-        # Virtual node embeddings for graphs
+    def forward(self, h, g, vn_index=None):
+        # h: (N, D)
+        # g: (C, D)
+        # vn_index: (N, 2)
         # import ipdb; ipdb.set_trace()
-        if vx is None:
-            vx = self.vn_emb.weight
-        # import ipdb; ipdb.set_trace()
-        # Add message from virtual nodes to graph nodes
-        if self.virtual_num > 1:
-            # message passing between virtual node
-            # import ipdb; ipdb.set_trace()
-            # if layer == self.num_layer - 1:
-            #     vx = self.convs[layer](vx, self.virtual_edge_index.to(x.device))
-            #     # pass 
-            # # vx = self.bns[layer](vx)
-            # # vx = F.relu(vx)
-            # select_vns = torch.index_select(vx, 0, vn_indices[:, 1])
-            # h = x + select_vns
-            
-            h = x + self.att_list[layer](x, vx)
-        else:
-            h = x + vx
-        return h, vx
-
-    def update_vn_emb(self, layer, x, vx):
-        r""" Add message from graph nodes to virtual node.
-        Args:
-            x (torch.Tensor): The input node feature.
-            batch (LongTensor): Batch vector, which assigns each node to a specific example.
-            vx (torch.Tensor): Optional virtual node embedding.
-
-        Returns:
-            (torch.Tensor): The output virtual node embedding.
-        """
-
-        # Add message from graph nodes to virtual nodes
-        # vx = self.linear(vx)
-        # import ipdb; ipdb.set_trace()
-        if self.virtual_num > 1:
-            vx_tmp_list = []
-
-            for v in range(self.virtual_num):
-                vx_temp = global_add_pool(x[self.vn_index[v]], torch.zeros(1, dtype=torch.int64, device=x.device))
-                vx_tmp_list.append(vx_temp)
-            # import ipdb; ipdb.set_trace()
-            vx_temp = torch.cat(vx_tmp_list, dim=0) + vx
-        else:
-            # import ipdb; ipdb.set_trace()
-            vx_temp = global_add_pool(x, torch.zeros(1, dtype=torch.int64, device=x.device)) + vx
-
-        # transform virtual nodes using MLP
-        vx_temp = self.mlp_vns[layer](vx_temp)
-
-        if self.residual:
-            vx = vx + F.dropout(
-                vx_temp, self.dropout, training=self.training)
-        else:
-            vx = F.dropout(
-                vx_temp, self.dropout, training=self.training)
-
-        return vx
-
-
+        if vn_index is not None:
+            g = torch.index_select(g, 0, vn_index[:, 1])
+        z = self.H(h) + self.G(g)
+        if self.dropout_ratio > 0.0:
+            z = F.dropout(z, self.dropout_ratio)
+        z = self.activation(z)
+        merged = (1 - z) * h + z * g
+        return merged
+    
 class VNGNN(torch.nn.Module):
     def __init__(self, 
                  in_channels,
@@ -313,12 +184,15 @@ class VNGNN(torch.nn.Module):
                  edge_index,
                  model, # "sage", "gcn"
                  dataset = "arxiv",
-                 clutser_method="full", # ""metis", "full", "random"
+                 cluster_method="full", # ""metis", "full", "random"
                  use_virtual=False, 
                  num_clusters=0, 
                  JK=False,  
                  mode="cat",
-                 sparse_ratio=1.0):
+                 sparse_ratio=1.0,
+                 use_bn=1,
+                 mlp_share=False,
+                 args=None):
         
         super().__init__()
         
@@ -328,17 +202,36 @@ class VNGNN(torch.nn.Module):
         self.edge_index = edge_index
         self.dropout = dropout
         self.num_clusters = num_clusters
-        self.clutser_method = clutser_method
+     
+        self.cluster_method = cluster_method
         self.JK = JK 
         self.use_virtual = use_virtual
         self.convs = torch.nn.ModuleList()
         self.bns = torch.nn.ModuleList()
-        
+        self.use_bn = use_bn
 
         if self.use_virtual:
-            self.vn_index, self.cluster_adj = self.build_virtual_edges(sparse_ratio=sparse_ratio)
-            self.vns = VirtualNode(in_channels, hidden_channels, num_layers, self.vn_index, model, num_clusters, self.cluster_adj, self.dropout)
+            
+            self.vn_index, self.cluster_adj = build_virtual_edges(edge_index, num_clusters, dataset, sparse_ratio=sparse_ratio, cluster_method=cluster_method)
+            self.virtual_nodes = nn.Embedding(num_clusters, in_channels)
+            channels = [in_channels] + [hidden_channels] * (num_layers - 1) + [out_channels] # (layer + 1, )
+            self.vn_trans = nn.ModuleList() # layer
+            self.vn_update = nn.ModuleList() # layer - 1
+            self.vn_merge = nn.ModuleList()
 
+            self.gn_merge = nn.ModuleList()
+            self.gn_trans = nn.ModuleList()
+            for i in range(num_layers):
+                self.gn_trans.append(GNTransmitterUnit(channels[i], channels[i+1]))
+                self.gn_merge.append(WarpGateUnit(channels[i+1], args.merge_dropout))
+            for i in range(num_layers - 1):
+                # self.vn_update.append(nn.Linear(channels[i], channels[i+1]))
+                self.vn_update.append(get_conv_layer(model, channels[i], channels[i+1]))
+                self.vn_trans.append(VNTransmitterUnit(channels[i], channels[i+1], dropout_ratio=args.attn_dropout,activation=args.vntran_act)) 
+                self.vn_merge.append(WarpGateUnit(channels[i+1], args.merge_dropout))
+
+
+            # import ipdb; ipdb.set_trace()
         if model == "gat":
             # import ipdb; ipdb.set_trace()
             for i in range(num_layers):
@@ -384,54 +277,10 @@ class VNGNN(torch.nn.Module):
                 self.convs.append(
                     get_conv_layer(model, hidden_channels, out_channels))
 
-        print("Model modules:\n", self)
-
-    def build_virtual_edges(self, sparse_ratio=1.0):
-        vn_index = get_vn_index(
-            self.clutser_method, 
-            self.num_nodes, 
-            self.num_clusters, 
-            1, 
-            self.edge_index, 
-            save_dir=f"cluster_data/{self.dataset}_clutser_{self.clutser_method}_{self.num_clusters}.pt") # (C, N), index[i] specifies which nodes are connected to VN i
-        self.vn_index = vn_index
-        cluster_adj = self.build_cluster_edges(self.edge_index, f"cluster_data/{self.dataset}_cluster_adj_{self.num_clusters}.pt")
-        cluster_adj = self.adj_sparse(cluster_adj, sparse_ratio=sparse_ratio)
         
-        return vn_index, cluster_adj 
-    
-    def adj_sparse(self, matrix, sparse_ratio=1.0):
-        """
-        matrix: cluster[i][j]: # of graph edges between cluster i and cluster i
-        threshold: each cluster keeps "threshold" ratio of edges 
-        """
-        row_threshold = torch.topk(matrix, int(sparse_ratio * matrix.size(1)), dim=1, largest=True, sorted=False)[0][:, -1]
-        # 将矩阵中小于阈值的元素置为0，大于等于阈值的元素置为1
-        adj = (matrix >= row_threshold.view(-1, 1)).int()
-        coo = coo_matrix(adj)
-        edge_index = from_scipy_sparse_matrix(coo)[0]
-        edge_index = to_undirected(edge_index)
-        print(f"cluster edges: {edge_index.shape[1]}, total cluster edges:{matrix.shape[0] * (matrix.shape[0] - 1)}")
-        return edge_index
-     
-    def build_cluster_edges(self, edge_index, save_dir):
-        if os.path.exists(save_dir):
-            cluster_adj = torch.load(save_dir)
-            print(f"loading cluster edges from: {save_dir}")
-        else:
-            parts = self.num_clusters
-            cluster_adj = torch.zeros((parts, parts), dtype=torch.long)
-            vn_indices = torch.nonzero(self.vn_index.T)
-            print("building cluster edges: ")
-            start = time.time()
-            for i, j in zip(edge_index[0], edge_index[1]):
-                c_i, c_j = vn_indices[i][1], vn_indices[j][1]
-                cluster_adj[c_i][c_j] += 1
-            end = time.time()
-            print(f"building cluster edges done, cost {end - start}")
-            torch.save(cluster_adj, save_dir)
+        print("Model modules:\n", self)
+        # import ipdb; ipdb.set_trace()
 
-        return cluster_adj 
 
     def reset_parameters(self):
         for conv in self.convs:
@@ -439,9 +288,10 @@ class VNGNN(torch.nn.Module):
         for bn in self.bns:
             bn.reset_parameters()
         if self.use_virtual:
-            self.vns.reset_parameters() # set the initial virtual node embedding to 0.
-    
-    def forward(self, data):
+            # self.vns.reset_parameters() # set the initial virtual node embedding to 0.
+            nn.init.zeros_(self.virtual_nodes.weight.data)
+
+    def forward(self, data, batch_train=False):
         """
         x:              [# of nodes, # of features]
         adj_t:          [# of nodes, # of nodes]
@@ -452,33 +302,40 @@ class VNGNN(torch.nn.Module):
         adj_t = data.edge_index
         if self.use_virtual:
             vn_indices = torch.nonzero(self.vn_index.T).to(x.device)
+            vx = self.virtual_nodes.weight
         # import ipdb; ipdb.set_trace()
-        embs = [x]
+        embs = [x] 
         # virtual_emb = [self.virtual_node.weight]
         h = x
         for layer in range(self.num_layers):
-            ### 0. Message passing among virtual nodes
-            # virtual_node = self.convs_virtual[layer](virtual_emb[layer], self.cluster_adj.to(x.device))
-            
+            # GNUpdate, graph node update, （1）
+            h_hat = self.convs[layer](embs[layer], adj_t)  # (N, H)/(N, O)
+
             if self.use_virtual:
-                if layer == 0:
-                    vx = None
-                h, vx = self.vns.update_node_emb(layer, h, vn_indices, vx)
-            # import ipdb; ipdb.set_trace()
-            ### 2. Message passing among graph nodes
-            h = self.convs[layer](h, adj_t)  # GCN layer
-            
+                if layer != self.num_layers - 1:
+                    # VNUpdate, vraph node update, cross-cluster
+                    g_hat = self.vn_update[layer](vx, self.cluster_adj.to(x.device)) # (5), (C, H)
+
+                    # VNTrans, graph -> virtual node
+                    g_trans = self.vn_trans[layer](embs[layer], vx, self.vn_index) # (6), (C, H)
+                
+                 # GNTrans, virtual node -> graph node
+                h_trans = self.gn_trans[layer](vx)  # (2), (C, H)
+                # GNMerge
+                h = self.gn_merge[layer](h_hat, h_trans, vn_indices) # (3), (N, H)
+
+                if layer != self.num_layers - 1:
+                    # VNMerge
+                    vx = self.vn_merge[layer](g_trans, g_hat) # (C, H)
+                
             if layer != self.num_layers - 1 or self.JK:   
                 h = self.bns[layer](h)             
                 h = F.relu(h)
                 h = F.dropout(h, p=self.dropout, training=self.training)
             
             embs.append(h)
-
-            if self.use_virtual:
-                if layer != self.num_layers - 1 :
-                    vx = self.vns.update_vn_emb(layer, embs[layer], vx)
-
+                
+        
         if self.JK:
             emb = self.jump(embs[1:])
             emb = self.lin(emb)
@@ -486,113 +343,3 @@ class VNGNN(torch.nn.Module):
             emb = embs[-1]
 
         return emb.log_softmax(dim=-1)
-    
-
-class ElementWiseLinear(nn.Module):
-    def __init__(self, size, weight=True, bias=True, inplace=False):
-        super().__init__()
-        if weight:
-            self.weight = nn.Parameter(torch.Tensor(size))
-        else:
-            self.weight = None
-        if bias:
-            self.bias = nn.Parameter(torch.Tensor(size))
-        else:
-            self.bias = None
-        self.inplace = inplace
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        if self.weight is not None:
-            nn.init.ones_(self.weight)
-        if self.bias is not None:
-            nn.init.zeros_(self.bias)
-
-    def forward(self, x):
-        if self.inplace:
-            if self.weight is not None:
-                x.mul_(self.weight)
-            if self.bias is not None:
-                x.add_(self.bias)
-        else:
-            if self.weight is not None:
-                x = x * self.weight
-            if self.bias is not None:
-                x = x + self.bias
-        return x
-
-
-# class GAT(nn.Module):
-#     def __init__(
-#         self,
-#         in_feats,
-#         n_classes,
-#         n_hidden,
-#         n_layers,
-#         n_heads,
-#         activation,
-#         dropout=0.0,
-#         input_drop=0.0,
-#         attn_drop=0.0,
-#         edge_drop=0.0,
-#         use_attn_dst=True,
-#         use_symmetric_norm=False,
-#     ):
-#         super().__init__()
-#         self.in_feats = in_feats
-#         self.n_hidden = n_hidden
-#         self.n_classes = n_classes
-#         self.n_layers = n_layers
-#         self.num_heads = n_heads
-
-#         self.convs = nn.ModuleList()
-#         self.norms = nn.ModuleList()
-
-#         for i in range(n_layers):
-#             in_hidden = n_heads * n_hidden if i > 0 else in_feats
-#             out_hidden = n_hidden if i < n_layers - 1 else n_classes
-#             num_heads = n_heads if i < n_layers - 1 else 1
-#             out_channels = n_heads
-
-#             self.convs.append(
-#                 GATConv(
-#                     in_hidden,
-#                     out_hidden,
-#                     num_heads=num_heads,
-#                     attn_drop=attn_drop,
-#                     edge_drop=edge_drop,
-#                     use_attn_dst=use_attn_dst,
-#                     use_symmetric_norm=use_symmetric_norm,
-#                     residual=True,
-#                 )
-#             )
-
-#             if i < n_layers - 1:
-#                 self.norms.append(nn.BatchNorm1d(out_channels * out_hidden))
-
-#         self.bias_last = ElementWiseLinear(n_classes, weight=False, bias=True, inplace=True)
-
-#         self.input_drop = nn.Dropout(input_drop)
-#         self.dropout = nn.Dropout(dropout)
-#         self.activation = activation
-
-#     def forward(self, graph, feat):
-#         h = feat
-#         h = self.input_drop(h)
-
-#         for i in range(self.n_layers):
-#             conv = self.convs[i](graph, h)
-
-#             h = conv
-
-#             if i < self.n_layers - 1:
-#                 h = h.flatten(1)
-#                 h = self.norms[i](h)
-#                 h = self.activation(h, inplace=True)
-#                 h = self.dropout(h)
-
-#         h = h.mean(1)
-#         h = self.bias_last(h)
-
-#         return h

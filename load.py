@@ -56,6 +56,25 @@ def load_data(dataset_name: str,
         split_idx = {'train': graph.train_mask.nonzero().reshape(-1),
                      'valid': graph.val_mask.nonzero().reshape(-1),
                      'test': graph.test_mask.nonzero().reshape(-1)}
+    elif dataset_name.lower() in ["proteins"]:
+        import torch_geometric.transforms as T
+        dataset = PygNodePropPredDataset(
+            name='ogbn-proteins', transform=T.ToSparseTensor(attr='edge_attr'))
+        graph = dataset[0]
+        # import ipdb; ipdb.set_trace()
+        # Move edge features to node features.
+        graph.x = graph.adj_t.mean(dim=1)
+        graph.adj_t.set_value_(None)
+
+        # row, col, _ = graph.adj_t.coo()
+        # graph.edge_index = torch.stack([row, col], dim=0)
+      
+        split_idx = dataset.get_idx_split()
+        N = graph.num_nodes
+        for mask_type in ["train", "valid", "test"]:
+            graph[f'{mask_type}_mask'] = torch.BoolTensor(N) * False 
+            graph[f'{mask_type}_mask'][split_idx[mask_type]] = True
+
     else:
         raise NotImplementedError
 

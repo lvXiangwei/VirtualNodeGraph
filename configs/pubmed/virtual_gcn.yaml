@@ -1,6 +1,6 @@
 dataset: Pubmed
 model: gcn
-num_layers: 2
+num_layers: 3
 hidden_channels: 16
 dropout: 0.5
 
@@ -15,5 +15,5 @@ mode: "max" # no use
 
 use_virtual: True
 cluster_method: "metis" 
-num_parts: 2
+num_parts: 8
 sparse_ratio: 1.0 

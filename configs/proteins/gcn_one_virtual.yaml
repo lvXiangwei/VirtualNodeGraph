@@ -1,0 +1,20 @@
+dataset: proteins
+model: gcn
+num_layers: 3
+hidden_channels: 256
+dropout: 0.0
+
+log_steps: 5
+lr: 0.01
+wd: 0.0
+epochs: 1000
+runs: 2
+use_bn: 0
+
+mlp_share: True 
+mode: "max" # no use
+
+use_virtual: True
+cluster_method: "metis" 
+num_parts: 1
+sparse_ratio: 1.0 

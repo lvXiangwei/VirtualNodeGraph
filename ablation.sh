@@ -1,0 +1,1 @@
+nohup python -u main.py --cfg configs/ablation/virtual_sage3_random.yaml --device 1 > new_logs/ablation/random_cluster.log &

@@ -13,18 +13,24 @@ from utils import count_parameters, seed_everything, load_config
 from load import load_data, GraphPreprocess
 from torch_geometric.loader import NeighborLoader
 
-from model7 import VNGNN
+from model import VNGNN
 
-def bacth_train(model, train_loader, optimizer):
+def bacth_train(model, train_loader, optimizer, criterion=F.nll_loss):
     model.train()
     total_loss = total_nodes = 0
     for batch in train_loader:
         batch = batch.to(device)
         optimizer.zero_grad()
         batch.x = batch.x.to(device)
+        if batch.edge_index is None:
+            batch.edge_index = batch.adj_t
         batch.edge_index = batch.edge_index.to(device)
         out = model(batch)[batch.train_mask]
-        loss = F.nll_loss(out, batch.y[batch.train_mask].to(device))
+        if criterion == F.nll_loss:
+            out = out.log_softmax(dim=-1)
+        else:
+            batch.y = batch.y.to(torch.float)
+        loss = criterion(out, batch.y[batch.train_mask].to(device))
         loss.backward()
         optimizer.step()
 
@@ -33,46 +39,75 @@ def bacth_train(model, train_loader, optimizer):
         total_nodes += nodes
     return total_loss / total_nodes
 
-def train(model, data, optimizer):
+def train(model, data, optimizer, criterion=F.nll_loss):
     model.train()
     optimizer.zero_grad()
     data.x = data.x.to(device)
+    if data.edge_index is None:
+        data.edge_index = data.adj_t
     data.edge_index = data.edge_index.to(device)
     out = model(data)[data.train_mask]
-    loss = F.nll_loss(out, data.y[data.train_mask].to(device))
+    # import ipdb; ipdb.set_trace()
+    if criterion == F.nll_loss:
+        out = out.log_softmax(dim=-1)
+    else:
+        data.y = data.y.to(torch.float)
+    loss = criterion(out, data.y[data.train_mask].to(device))
     loss.backward()
     optimizer.step()
     return loss.item()
 
 @torch.no_grad()
-def test(model, data, evaluator):
+def test(model, data, evaluator, criterion=F.nll_loss):
     model.eval()
     # out = model(data.x.to(device), data.edge_index.to(device))
     data.x = data.x.to(device)
+    if data.edge_index is None:
+        data.edge_index = data.adj_t
     data.edge_index = data.edge_index.to(device)
     out = model(data, batch_train=False)
-    y_pred = out.argmax(dim=-1, keepdims=True)
-    
-    # loss
-    train_loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask].to(device))
-    valid_loss = F.nll_loss(out[data.valid_mask], data.y[data.valid_mask].to(device))
-    test_loss = F.nll_loss(out[data.test_mask], data.y[data.test_mask].to(device))
 
-    # acc
-    train_acc = evaluator.eval({
-        'y_true': data.y[data.train_mask].unsqueeze(1),
-        'y_pred': y_pred[data.train_mask],
-    })['acc']
-    valid_acc = evaluator.eval({
-        'y_true': data.y[data.valid_mask].unsqueeze(1),
-        'y_pred': y_pred[data.valid_mask],
-    })['acc']
-    test_acc = evaluator.eval({
-        'y_true': data.y[data.test_mask].unsqueeze(1),
-        'y_pred': y_pred[data.test_mask],
-    })['acc']
+    if criterion == F.nll_loss:
+        y_pred = out.argmax(dim=-1, keepdims=True)
+        out = out.log_softmax(dim=-1)
+    else:
+        y_pred = out
+        data.y = data.y.to(torch.float)
 
-    return (train_acc, valid_acc, test_acc), (train_loss, valid_loss, test_loss)
+        
+    train_loss = criterion(out[data.train_mask], data.y[data.train_mask].to(device))
+    valid_loss = criterion(out[data.valid_mask], data.y[data.valid_mask].to(device))
+    test_loss = criterion(out[data.test_mask], data.y[data.test_mask].to(device))
+
+    # import ipdb; ipdb.set_trace()
+    if criterion  == F.nll_loss:
+        train_metric = evaluator.eval({
+            'y_true': data.y[data.train_mask].unsqueeze(1),
+            'y_pred': y_pred[data.train_mask],
+        })
+        valid_metric = evaluator.eval({
+            'y_true': data.y[data.valid_mask].unsqueeze(1),
+            'y_pred': y_pred[data.valid_mask],
+        })
+        test_metric = evaluator.eval({
+            'y_true': data.y[data.test_mask].unsqueeze(1),
+            'y_pred': y_pred[data.test_mask],
+        })
+    else:
+        train_metric = evaluator.eval({
+            'y_true': data.y[data.train_mask],
+            'y_pred': y_pred[data.train_mask],
+        })
+        valid_metric = evaluator.eval({
+            'y_true': data.y[data.valid_mask],
+            'y_pred': y_pred[data.valid_mask],
+        })
+        test_metric = evaluator.eval({
+            'y_true': data.y[data.test_mask],
+            'y_pred': y_pred[data.test_mask],
+        })
+
+    return (train_metric, valid_metric, test_metric), (train_loss, valid_loss, test_loss)
 
 
 def main():
@@ -100,10 +135,18 @@ def main():
     parser.add_argument('--num_parts', type=int, default=128)
     parser.add_argument('--sparse_ratio', type=float, default=1.0)
     parser.add_argument('--use_bn', type=int, default=1)
+    parser.add_argument('--mlp_share', action='store_true')
     # parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--optim', type=str, default="adam")
+    
     parser.add_argument('--cfg', type=str, default=None) # for reproduction
 
     parser.add_argument('--sample', type=str, default=None) # 
+
+    # for model 3
+    parser.add_argument('--attn_dropout', type=float, default=-1) # 
+    parser.add_argument('--merge_dropout', type=float, default=-1) # 
+    parser.add_argument("--vntran_act", type=str, default="tanh")
     args = parser.parse_args()
     
     if args.cfg:
@@ -146,35 +189,49 @@ def main():
         # )
     # 2. model 
     #########################################################
+    # import ipdb; ipdb.set_trace()
     model = VNGNN(graph.num_features, 
                   args.hidden_channels, 
-                  int(graph.y.max().item()) + 1,
+                  int(graph.y.max().item()) + 1 if graph.y.dim() == 1 else graph.y.shape[1],
                   args.num_layers, 
                   args.dropout, 
                   graph.num_nodes, 
-                  graph.edge_index, 
+                  graph.edge_index if graph.edge_index else graph.adj_t, 
                   dataset=args.dataset,
                   model=args.model,
-                  clutser_method=args.cluster_method, 
+                  cluster_method=args.cluster_method, 
                   num_clusters=args.num_parts, 
                   JK=args.JK, 
                   use_virtual=args.use_virtual,
                   mode=args.mode, 
                   sparse_ratio=args.sparse_ratio,
-                  use_bn = args.use_bn).to(device)
+                  use_bn = args.use_bn,
+                  mlp_share=args.mlp_share, 
+                  args=args).to(device)
     #########################################################
     print("Parameters:")
     count_parameters(model)
-    evaluator = Evaluator(name='ogbn-arxiv')
+    if args.dataset == "proteins":
+        print("dataset name: ", args.dataset)
+        evaluator = Evaluator(name='ogbn-proteins')
+        metric = "rocauc"
+        criterion = torch.nn.BCEWithLogitsLoss()
+    else:
+        evaluator = Evaluator(name='ogbn-arxiv')
+        criterion = F.nll_loss
+        metric = "acc"
     logger = Logger(args.runs, args)
     print("\nStart Training...")
     for run in range(args.runs):
         model.reset_parameters()
         # import ipdb; ipdb.set_trace()
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        if args.optim == "rmsprop":
+            optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        else:
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
         if run == 0 and args.wandb:
             wandb.init(
-                project = "obgn-arxiv",
+                project = f"{args.dataset}",
                 name = f"{args.experiment_name}",
             )
             wandb.config.update(args)
@@ -182,35 +239,36 @@ def main():
         for epoch in range(1, 1 + args.epochs):
             # import ipdb; ipdb.set_trace()
             if args.sample == "neighbor":
-                bacth_train(model, train_loader, optimizer)
+                bacth_train(model, train_loader, optimizer, criterion)
             else:
-                train(model, graph, optimizer)
+                train(model, graph, optimizer, criterion)
             if epoch % args.log_steps == 0:
-                accs, losses = test(model, graph, evaluator)
-                logger.add_result(run, accs)
-                (train_acc, valid_acc, test_acc), (train_loss, valid_loss, test_loss) = accs, losses
+                metrics, losses = test(model, graph, evaluator, criterion)
+                
+                (train_metric, valid_metric, test_metric), (train_loss, valid_loss, test_loss) = metrics, losses
+                logger.add_result(run, [val[metric] for val in metrics])
                 print(f'Run: {run + 1:02d}, '
                       f'Epoch: {epoch:02d}, '
                       f'Train Loss: {train_loss:.4f}, '
                       f'Valid Loss: {valid_loss: .4f}, '
                       f'Test Loss: {test_loss: .4f}, ',
-                      f'Train Acc: {100 * train_acc:.2f}%, '
-                      f'Valid Acc: {100 * valid_acc:.2f}%, '
-                      f'Test Acc: {100 * test_acc:.2f}%')
+                      f'Train {metric.title()}: {train_metric[metric]:.4f}, '
+                      f'Valid {metric.title()}: {valid_metric[metric]:.4f}, '
+                      f'Test {metric.title()}: {test_metric[metric]:.4f}')
                 if run == 0 and args.wandb:
                     wandb.log({
                             "train/loss": train_loss,
-                            "train/acc": train_acc,
+                            f"train/{metric.title()}": train_metric,
                             "val/loss": valid_loss,
-                            "val/acc": valid_acc,
+                            f"val/{metric.title()}": valid_metric,
                             "test/loss": test_loss,
-                            "test/acc": test_acc
+                            f"test/{metric.title()}": test_metric
                         },
                         step = epoch  
                     )
-        run_final_acc = logger.print_statistics(run)
+        run_final_metric = logger.print_statistics(run)
         if run == 0 and args.wandb:
-            wandb.summary["final_acc"] = run_final_acc
+            wandb.summary[f"final_{metric}"] = run_final_metric
     logger.print_statistics()
 
 if __name__ == "__main__":

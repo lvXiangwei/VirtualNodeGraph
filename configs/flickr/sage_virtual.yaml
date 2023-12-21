@@ -1,0 +1,18 @@
+dataset: flickr
+model: sage
+num_layers: 2
+hidden_channels: 256
+dropout: 0.2
+
+log_steps: 1
+lr: 0.01
+wd: 0.0
+epochs: 500
+runs: 5
+
+mode: "max" # no use
+
+use_virtual: True
+cluster_method: "metis" 
+num_parts: 16
+sparse_ratio: 1.0 

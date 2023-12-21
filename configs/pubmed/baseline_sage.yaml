@@ -1,0 +1,16 @@
+dataset: Pubmed
+model: sage
+num_layers: 2
+hidden_channels: 16
+dropout: 0.5
+
+log_steps: 1
+lr: 0.01
+wd: 0.0005
+epochs: 300
+runs: 5
+use_bn: 0
+
+mode: "max" # no use
+
+cluster_method: "metis" # no use

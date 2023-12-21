@@ -64,11 +64,12 @@ def get_vn_index(name, num_ns, num_vns, num_vns_conn, edge_index, save_dir):
         return None
     elif "metis" in name:
         if not os.path.exists(save_dir):
-            print("Clutsering...")
+            print("clustering...")
             start = time.time()
             if num_vns == 1:
                 idx = torch.ones(1, num_ns)
             else:
+                import ipdb; ipdb.set_trace
                 clu = ClusterData(Data(edge_index=edge_index), num_parts=num_vns)
                 # import ipdb; ipdb.set_trace()
                 idx = torch.zeros(num_vns, num_ns)
@@ -141,9 +142,12 @@ class VirtualNode(nn.Module):
             # nn.Linear(2 * hidden_feats, hidden_feats),
             # nn.LayerNorm(hidden_feats),
             # nn.ReLU())
-            nn.Linear(in_feats, hidden_feats),
-            nn.LayerNorm(hidden_feats),
-            nn.ReLU()
+            nn.Linear(in_feats, 2 * hidden_feats),
+                nn.LayerNorm(2 *  hidden_feats),
+                nn.ReLU(),
+                nn.Linear(2 * hidden_feats, hidden_feats),
+                nn.LayerNorm(hidden_feats),
+                nn.ReLU()
             )
         )
 
@@ -162,7 +166,10 @@ class VirtualNode(nn.Module):
                     # nn.Linear(2 * hidden_feats, hidden_feats),
                     # nn.BatchNorm1d(hidden_feats),
                     # nn.ReLU())
-                    nn.Linear(hidden_feats, hidden_feats),
+                    nn.Linear(hidden_feats, 2 * hidden_feats),
+                    nn.LayerNorm(2 *  hidden_feats),
+                    nn.ReLU(),
+                    nn.Linear(2 * hidden_feats, hidden_feats),
                     nn.LayerNorm(hidden_feats),
                     nn.ReLU()
                 )
@@ -192,7 +199,7 @@ class VirtualNode(nn.Module):
         r""" Add message from virtual nodes to graph nodes.
         Args:
             x (torch.Tensor): The input node feature.
-            vn_indices: (# of clutser, # of node)
+            vn_indices: (# of cluster, # of node)
             vx (torch.Tensor, optional): Optional virtual node embedding.
 
         Returns:
@@ -269,13 +276,13 @@ class VNGNN(torch.nn.Module):
                  edge_index,
                  model, # "sage", "gcn"
                  dataset = "arxiv",
-                 clutser_method="full", # ""metis", "full", "random"
+                 cluster_method="full", # ""metis", "full", "random"
                  use_virtual=False, 
                  num_clusters=0, 
                  JK=False,  
                  mode="cat",
                  sparse_ratio=1.0,
-                 use_bn=1):
+                 use_bn=1, **kwargs):
         
         super().__init__()
         
@@ -285,7 +292,7 @@ class VNGNN(torch.nn.Module):
         self.edge_index = edge_index
         self.dropout = dropout
         self.num_clusters = num_clusters
-        self.clutser_method = clutser_method
+        self.cluster_method = cluster_method
         self.JK = JK 
         self.use_virtual = use_virtual
         self.convs = torch.nn.ModuleList()
@@ -346,15 +353,15 @@ class VNGNN(torch.nn.Module):
 
     def build_virtual_edges(self, sparse_ratio=1.0):
         vn_index = get_vn_index(
-            self.clutser_method, 
+            self.cluster_method, 
             self.num_nodes, 
             self.num_clusters, 
             1, 
             self.edge_index, 
-            save_dir=f"cluster_data/{self.dataset}_clutser_{self.clutser_method}_{self.num_clusters}.pt") # (C, N), index[i] specifies which nodes are connected to VN i
+            save_dir=f"cluster_data/{self.dataset}/{self.dataset}_cluster_{self.cluster_method}_{self.num_clusters}.pt") # (C, N), index[i] specifies which nodes are connected to VN i
         
         self.vn_index = vn_index
-        cluster_adj = self.build_cluster_edges(self.edge_index, f"cluster_data/{self.dataset}_cluster_adj_{self.num_clusters}.pt")
+        cluster_adj = self.build_cluster_edges(self.edge_index, f"cluster_data/{self.dataset}/{self.dataset}_cluster_adj_{self.num_clusters}.pt")
         cluster_adj = self.adj_sparse(cluster_adj, sparse_ratio=sparse_ratio)
         
         return vn_index, cluster_adj 
@@ -383,8 +390,17 @@ class VNGNN(torch.nn.Module):
             vn_indices = torch.nonzero(self.vn_index.T)
             print("building cluster edges: ")
             start = time.time()
-            for i, j in zip(edge_index[0], edge_index[1]):
-                c_i, c_j = vn_indices[i][1], vn_indices[j][1]
+            N =  edge_index.shape[1]
+            # for i, j in zip(edge_index[0], edge_index[1]):
+            #     c_i, c_j = vn_indices[i][1], vn_indices[j][1]
+            #     cluster_adj[c_i][c_j] += 1
+            from tqdm import tqdm
+            start_lst = edge_index[0]
+            end_lst = edge_index[1]
+            node2cluster = vn_indices[:, 1]
+            for i in tqdm(range(N)):
+                start, end = start_lst[i], end_lst[i]
+                c_i, c_j = node2cluster[start], node2cluster[end]
                 cluster_adj[c_i][c_j] += 1
             end = time.time()
             print(f"building cluster edges done, cost {end - start}")
@@ -400,7 +416,7 @@ class VNGNN(torch.nn.Module):
         if self.use_virtual:
             self.vns.reset_parameters() # set the initial virtual node embedding to 0.
     
-    def forward(self, data):
+    def forward(self, data, batch_train=False):
         """
         x:              [# of nodes, # of features]
         adj_t:          [# of nodes, # of nodes]

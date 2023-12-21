@@ -57,8 +57,10 @@
 - JKNet
     - 72.14 ± 0.12 (virtual_jknet.yaml)
 
----
-### Model Design
-- model.py: current result, logs/
-- model2.py: logs/mlp reduction
-- model3.py: logs/attention_v1
+### model design
+
+model.py # baseline, one virtual node(layer norm)
+model2.py # current multiple virtual node model
+model_2.py # mlp share parameters , x
+model3.py: # model redesign
+
