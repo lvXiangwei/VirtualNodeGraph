@@ -1,0 +1,20 @@
+# model.py
+dataset: DBLP
+model: gcn
+num_layers: 2 # 1, 2,3
+hidden_channels: 256
+dropout: 0.6
+
+use_bn: 1
+log_steps: 1
+lr: 0.005
+wd: 0.0001
+epochs: 1000
+runs: 3
+
+mode: "max" # no use
+
+# use_virtual: True
+# cluster_method: "metis" 
+# num_parts: 16
+# sparse_ratio: 1.0
